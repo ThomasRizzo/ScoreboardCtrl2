@@ -80,8 +80,8 @@ async fn main(spawner: embassy_executor::Spawner) {
         }
     }
 
-    let fw = include_bytes!("../../picoserve/examples/embassy/cyw43-firmware/43439A0.bin");
-    let clm = include_bytes!("../../picoserve/examples/embassy/cyw43-firmware/43439A0_clm.bin");
+    let fw = include_bytes!("../cyw43-firmware/43439A0.bin");
+    let clm = include_bytes!("../cyw43-firmware/43439A0_clm.bin");
 
     let pwr = Output::new(p.PIN_23, Level::Low);
     let cs = Output::new(p.PIN_25, Level::High);
