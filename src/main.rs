@@ -11,8 +11,9 @@ use embassy_rp::{
 
 use embassy_time::Duration;
 use panic_persist as _;
-use picoserve::{make_static, routing::get, AppBuilder, AppRouter};
+use picoserve::{make_static, routing::{get, post}, AppBuilder, AppRouter};
 use rand::Rng;
+use static_cell::StaticCell;
 
 embassy_rp::bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => embassy_rp::pio::InterruptHandler<embassy_rp::peripherals::PIO0>;
@@ -37,17 +38,33 @@ async fn net_task(mut stack: embassy_net::Runner<'static, cyw43::NetDriver<'stat
     stack.run().await
 }
 
-struct AppProps;
+static LED: StaticCell<Output> = StaticCell::new();
+
+struct AppProps {
+    led: &'static mut Output<'static>,
+}
 
 impl AppBuilder for AppProps {
     type PathRouter = impl picoserve::routing::PathRouter;
 
     fn build_app(self) -> picoserve::Router<Self::PathRouter> {
-        picoserve::Router::new().route("/", get(|| async move { "Hello World" }))
+        let led = self.led as *mut Output;
+        picoserve::Router::new()
+            .route("/", get(|| async move { 
+                include_str!("../index.html")
+            }))
+            .route("/led/on", post(move || async move {
+                unsafe { &mut *led }.set_high();
+                "LED ON"
+            }))
+            .route("/led/off", post(move || async move {
+                unsafe { &mut *led }.set_low();
+                "LED OFF"
+            }))
     }
 }
-
-const WEB_TASK_POOL_SIZE: usize = 8;
+    
+    const WEB_TASK_POOL_SIZE: usize = 8;
 
 #[embassy_executor::task(pool_size = WEB_TASK_POOL_SIZE)]
 async fn web_task(
@@ -127,7 +144,10 @@ async fn main(spawner: embassy_executor::Spawner) {
         )
         .await;
 
-    let app = make_static!(AppRouter<AppProps>, AppProps.build_app());
+    let led = Output::new(p.PIN_0, Level::Low);
+    let led_ref = LED.init(led);
+
+    let app = make_static!(AppRouter<AppProps>, AppProps { led: led_ref }.build_app());
 
     let config = make_static!(
         picoserve::Config<Duration>,
