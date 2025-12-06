@@ -27,36 +27,7 @@ enum GpioCommand {
     LedOff,
 }
 
-#[embassy_executor::task]
-async fn logger_task(usb: embassy_rp::Peri<'static, embassy_rp::peripherals::USB>) {
-    let driver = embassy_rp::usb::Driver::new(usb, Irqs);
-    embassy_usb_logger::run!(1024, log::LevelFilter::Info, driver);
-}
 
-#[embassy_executor::task]
-async fn wifi_task(
-    runner: cyw43::Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>,
-) -> ! {
-    runner.run().await
-}
-
-#[embassy_executor::task]
-async fn net_task(mut stack: embassy_net::Runner<'static, cyw43::NetDriver<'static>>) -> ! {
-    stack.run().await
-}
-
-#[embassy_executor::task]
-async fn gpio_task(
-    mut led: Output<'static>,
-    receiver: embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, GpioCommand, 4>,
-) {
-    loop {
-        match receiver.receive().await {
-            GpioCommand::LedOn => led.set_high(),
-            GpioCommand::LedOff => led.set_low(),
-        }
-    }
-}
 
 type GpioCmdSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, GpioCommand, 4>;
 
@@ -86,6 +57,24 @@ impl AppBuilder for AppProps {
     
     const WEB_TASK_POOL_SIZE: usize = 8;
 
+#[embassy_executor::task]
+async fn logger_task(usb: embassy_rp::Peri<'static, embassy_rp::peripherals::USB>) {
+    let driver = embassy_rp::usb::Driver::new(usb, Irqs);
+    embassy_usb_logger::run!(1024, log::LevelFilter::Info, driver);
+}
+
+#[embassy_executor::task]
+async fn wifi_task(
+    runner: cyw43::Runner<'static, Output<'static>, PioSpi<'static, PIO0, 0, DMA_CH0>>,
+) -> ! {
+    runner.run().await
+}
+
+#[embassy_executor::task]
+async fn net_task(mut stack: embassy_net::Runner<'static, cyw43::NetDriver<'static>>) -> ! {
+    stack.run().await
+}
+
 #[embassy_executor::task(pool_size = WEB_TASK_POOL_SIZE)]
 async fn web_task(
     task_id: usize,
@@ -104,11 +93,22 @@ async fn web_task(
         .into_never()
 }
 
+#[embassy_executor::task]
+async fn gpio_task(
+    mut led: Output<'static>,
+    receiver: embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, GpioCommand, 4>,
+) {
+    loop {
+        match receiver.receive().await {
+            GpioCommand::LedOn => led.set_high(),
+            GpioCommand::LedOff => led.set_low(),
+        }
+    }
+}
+
 #[embassy_executor::main]
 async fn main(spawner: embassy_executor::Spawner) {
     let p = embassy_rp::init(Default::default());
-
-    spawner.must_spawn(logger_task(p.USB));
 
     if let Some(panic_message) = panic_persist::get_panic_message_utf8() {
         loop {
@@ -135,12 +135,11 @@ async fn main(spawner: embassy_executor::Spawner) {
     );
 
     let state = make_static!(cyw43::State, cyw43::State::new());
-    let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw).await;
-    spawner.must_spawn(wifi_task(runner));
+    let (net_device, mut control, wifi_runner) = cyw43::new(state, pwr, spi, fw).await;
 
     control.init(clm).await;
 
-    let (stack, runner) = embassy_net::new(
+    let (stack, net_runner) = embassy_net::new(
         net_device,
         embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
             address: embassy_net::Ipv4Cidr::new(core::net::Ipv4Addr::new(192, 168, 0, 1), 24),
@@ -154,7 +153,9 @@ async fn main(spawner: embassy_executor::Spawner) {
         embassy_rp::clocks::RoscRng.gen(),
     );
 
-    spawner.must_spawn(net_task(runner));
+    spawner.must_spawn(logger_task(p.USB));
+    spawner.must_spawn(wifi_task(wifi_runner));
+    spawner.must_spawn(net_task(net_runner));
 
     control
         .start_ap_wpa2(
