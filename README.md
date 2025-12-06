@@ -299,6 +299,17 @@ struct SerialState {
 - DMA: Channel 1
 - Updates `SerialState` continuously with each received byte
 
+## Development
+
+This project was developed with AI assistance from **Amp** (Sourcegraph's AI coding agent). Key contributions include:
+
+- Async task architecture design following Embassy patterns
+- Packet parsing implementation for serial data
+- Clean separation of concerns (infrastructure tasks, shared state, exclusive resources)
+- Documentation and README patterns
+
+The codebase combines human direction with AI implementation, emphasizing safety (no unsafe code), clarity, and idiomatic Rust/Embassy patterns.
+
 ## References
 
 - [Embassy docs](https://embassy.dev/)
