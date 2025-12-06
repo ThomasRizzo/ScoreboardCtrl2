@@ -9,25 +9,31 @@ A Raspberry Pi Pico W web server with HTTP-controlled GPIO LED. Demonstrates cle
 - **LED Control** - HTTP endpoints to control GPIO0 LED
 - **Web UI** - Styled HTML buttons to toggle LED on/off
 - **USB Logger** - Debug logging via USB serial (embassy-usb-logger)
-- **Message-based GPIO** - Safe channel-based control (no unsafe code)
+- **Serial Input** - UART0 reads external device data (9600 baud, GPIO17 RX)
+- **Message-based Architecture** - Safe channel-based control (no unsafe code)
 
 ## Architecture
 
 ### Async Task Pattern for Embedded Systems
 
-This project demonstrates clean resource ownership patterns in Embassy async code:
+This project demonstrates clean resource ownership patterns in Embassy async code, inspired by [ScoreboardCtrl](https://github.com/ThomasRizzo/ScoreboardCtrl/blob/js-best-practices/src/main.rs):
 
 ```rust
-let infrastructure_task = spawner.must_spawn(...);  // WiFi, net, web servers
-let peripheral_task = async {
-    loop { /* own and control GPIO */ }
+spawner.must_spawn(logger_task(...));    // USB logging
+spawner.must_spawn(wifi_task(...));      // WiFi driver
+spawner.must_spawn(net_task(...));       // Network stack
+spawner.must_spawn(read_serial(...));    // UART reader
+spawner.must_spawn(web_task(...));       // HTTP server pool (8x)
+
+let gpio = async {
+    loop { /* LED control */ }
 };
-gpio_task.await;
+gpio.await;
 ```
 
-**Key insight:** Each async block can own its peripherals directly. Use:
-- `spawner.must_spawn()` for shared infrastructure (WiFi, networking)
-- Async blocks for peripheral-specific tasks (GPIO, sensors, etc.)
+**Key insight:** Different resource ownership models for different needs:
+- `spawner.must_spawn()` for shared/stateful infrastructure (WiFi, network, serial I/O)
+- Async blocks for exclusive peripheral control (GPIO, single-owner resources)
 
 ### Message Passing for GPIO Control
 
@@ -63,6 +69,45 @@ let gpio = async {
 - No locks on hot path (HTTP handler just sends message)
 - Clear separation: handlers signal intent, task executes
 - Easy to extend: add more commands, more tasks
+
+### Serial Data Handling
+
+Serial input follows the pattern from ScoreboardCtrl: the UART task updates shared state via a `Mutex`, which other tasks can read:
+
+```rust
+/// Shared state updated by serial task
+#[derive(Clone, Copy)]
+struct SerialState {
+    last_byte: u8,
+    count: u32,
+}
+
+#[derive(Clone, Copy)]
+struct SharedSerialState(&'static Mutex<CriticalSectionRawMutex, SerialState>);
+
+// Serial task reads UART and updates state
+#[embassy_executor::task]
+async fn read_serial(mut rx: UartRx<'static, uart::Async>, state: SharedSerialState) -> ! {
+    let mut buf = [0; 1];
+    loop {
+        if let Ok(_) = rx.read(&mut buf).await {
+            let mut s = state.0.lock().await;  // Writer has exclusive lock
+            s.last_byte = buf[0];
+            s.count = s.count.saturating_add(1);
+        }
+    }
+}
+
+// Other tasks can read the state via lock
+let s = serial_state.0.lock().await;
+log::info!("Last byte: {}, count: {}", s.last_byte, s.count);
+```
+
+**Benefits:**
+- Single writer (serial task), multiple readers (HTTP handlers, logging)
+- No channels or message passing needed for read-only access
+- Efficient: readers only lock when they need the data
+- Scales to many readers naturally
 
 ## Lessons Learned
 
@@ -103,19 +148,31 @@ WiFi and network runners can't be shared between async blocks:
 - `spawner.must_spawn()` is required for them
 - Use spawner for infrastructure, async blocks for peripherals
 
-### 4. Scalability Pattern
+### 4. Shared State via Mutex vs Message Passing
 
-Easy to add more peripheral tasks:
+The project combines both patterns for different scenarios:
 
 ```rust
-let gpio = async { /* led control */ };
-let button = async { /* button logic */ };
-let sensor = async { /* temperature */ };
+// Hardware tasks that update shared state
+spawner.must_spawn(read_serial(rx, state));  // Single writer
+spawner.must_spawn(web_task(...));           // Multiple readers of state
+spawner.must_spawn(wifi_task(...));          // Stateful infrastructure
 
-join3(gpio, button, sensor).await;
+// Exclusive resource control via channels
+let (sender, receiver) = gpio_channel.split();
+
+let gpio = async {
+    loop {
+        match receiver.receive().await {
+            GpioCommand::LedOn => led.set_high(),
+            GpioCommand::LedOff => led.set_low(),
+        }
+    }
+};
 ```
 
-Each task owns its peripherals, no coordination needed.
+**Mutex (read-heavy data):** Serial state, scoreboard time, device status  
+**Channels (commands/events):** LED control, motor commands, state transitions
 
 ## Dependencies
 
@@ -155,12 +212,12 @@ cargo build --release
 
 ## Project Structure
 
-- `src/main.rs` - Embassy async application (144 lines)
-  - Infrastructure tasks (WiFi, network, web servers) spawned concurrently
-  - GPIO control via async block with message passing
-  - picoserve HTTP routing with State extraction
+- `src/main.rs` - Embassy async application (~240 lines)
+  - Infrastructure tasks: logger, WiFi, network, HTTP server pool, UART reader
+  - Shared state: `SerialState` via Mutex for read-heavy access patterns
+  - Peripheral control: GPIO LED via async block with channel-based messaging
+  - HTTP routing for LED on/off endpoints
 - `index.html` - Responsive web UI for LED control
-- `.beads/issues.jsonl` - Issue tracking (see AGENTS.md)
 - `AGENTS.md` - AI agent instructions and issue tracking guide
 
 ## API
@@ -173,8 +230,9 @@ POST /led/on       - Turn LED on
 POST /led/off      - Turn LED off
 ```
 
-### GpioCommand Enum
+### Internal Data Structures
 
+**GpioCommand** - Commands sent via channel from HTTP handlers to GPIO task:
 ```rust
 enum GpioCommand {
     LedOn,
@@ -182,7 +240,25 @@ enum GpioCommand {
 }
 ```
 
-Messages sent via embassy_sync::channel between HTTP handlers and GPIO task.
+**SerialState** - Shared state updated by UART reader, read by any task:
+```rust
+#[derive(Clone, Copy)]
+struct SerialState {
+    last_byte: u8,
+    count: u32,
+}
+```
+
+### Hardware Configuration
+
+**GPIO:**
+- LED control: GPIO0 (PIN_0), controlled via GpioCommand channel
+
+**UART0 Serial Input:**
+- Baud rate: 9600
+- RX pin: GPIO17 (PIN_17)
+- DMA: Channel 1
+- Updates `SerialState` continuously with each received byte
 
 ## References
 

@@ -7,9 +7,9 @@ use embassy_rp::{
     gpio::{Level, Output},
     peripherals::{DMA_CH0, PIO0},
     pio::Pio,
+    uart::{self, UartRx},
 };
-use embassy_sync::channel::Channel;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 
 use embassy_time::Duration;
 use panic_persist as _;
@@ -19,6 +19,7 @@ use rand::Rng;
 embassy_rp::bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => embassy_rp::pio::InterruptHandler<embassy_rp::peripherals::PIO0>;
     USBCTRL_IRQ => embassy_rp::usb::InterruptHandler<embassy_rp::peripherals::USB>;
+    UART0_IRQ => embassy_rp::uart::InterruptHandler<embassy_rp::peripherals::UART0>;
 });
 
 #[derive(Clone, Copy)]
@@ -27,12 +28,18 @@ enum GpioCommand {
     LedOff,
 }
 
+/// Serial state shared between UART task and HTTP handlers
+#[derive(Clone, Copy)]
+struct SerialState {
+    last_byte: u8,
+    count: u32,
+}
 
-
-type GpioCmdSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, GpioCommand, 4>;
+#[derive(Clone, Copy)]
+struct SharedSerialState(&'static Mutex<CriticalSectionRawMutex, SerialState>);
 
 struct AppProps {
-    gpio_cmd: GpioCmdSender,
+    gpio_cmd: embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, GpioCommand, 4>,
 }
 
 impl AppBuilder for AppProps {
@@ -55,12 +62,40 @@ impl AppBuilder for AppProps {
     }
 }
     
-    const WEB_TASK_POOL_SIZE: usize = 8;
+const WEB_TASK_POOL_SIZE: usize = 8;
 
 #[embassy_executor::task]
 async fn logger_task(usb: embassy_rp::Peri<'static, embassy_rp::peripherals::USB>) {
     let driver = embassy_rp::usb::Driver::new(usb, Irqs);
     embassy_usb_logger::run!(1024, log::LevelFilter::Info, driver);
+}
+
+/// Reads serial data from UART0 and updates shared state
+/// Demonstrates the pattern from ScoreboardCtrl where serial task updates
+/// Mutex-wrapped state that HTTP handlers can read
+#[embassy_executor::task]
+async fn read_serial(
+    mut rx: UartRx<'static, uart::Async>,
+    state: SharedSerialState,
+) -> ! {
+    let mut buf = [0; 1];
+    log::info!("Serial read task started");
+    loop {
+        match rx.read(&mut buf).await {
+            Ok(_) => {
+                let byte = buf[0];
+                let mut s = state.0.lock().await;
+                s.last_byte = byte;
+                s.count = s.count.saturating_add(1);
+                if s.count % 256 == 0 {
+                    log::info!("Serial: byte={}, count={}", byte, s.count);
+                }
+            }
+            Err(e) => {
+                log::warn!("UART read error: {:?}", e);
+            }
+        }
+    }
 }
 
 #[embassy_executor::task]
@@ -92,6 +127,8 @@ async fn web_task(
         .await
         .into_never()
 }
+
+
 
 #[embassy_executor::main]
 async fn main(spawner: embassy_executor::Spawner) {
@@ -156,13 +193,29 @@ async fn main(spawner: embassy_executor::Spawner) {
     
     let (gpio_sender, gpio_receiver) = {
         let ch = make_static!(
-            Channel<CriticalSectionRawMutex, GpioCommand, 4>,
-            Channel::new()
+            embassy_sync::channel::Channel<CriticalSectionRawMutex, GpioCommand, 4>,
+            embassy_sync::channel::Channel::new()
         );
         (ch.sender(), ch.receiver())
     };
 
-    let app = make_static!(AppRouter<AppProps>, AppProps { gpio_cmd: gpio_sender }.build_app());
+    // Create shared serial state - accessed by serial task (writer) and HTTP handlers (readers)
+    let serial_state = SharedSerialState(
+        make_static!(
+            Mutex<CriticalSectionRawMutex, SerialState>,
+            Mutex::new(SerialState { last_byte: 0, count: 0 })
+        )
+    );
+
+    // Configure UART0 for serial reading
+    let mut uart_config = embassy_rp::uart::Config::default();
+    uart_config.baudrate = 9600;
+    let rx = UartRx::new(p.UART0, p.PIN_17, Irqs, p.DMA_CH1, uart_config);
+    spawner.must_spawn(read_serial(rx, serial_state));
+
+    let app = make_static!(AppRouter<AppProps>, AppProps { 
+        gpio_cmd: gpio_sender,
+    }.build_app());
 
     let config = make_static!(
         picoserve::Config<Duration>,
