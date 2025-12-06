@@ -8,17 +8,24 @@ use embassy_rp::{
     peripherals::{DMA_CH0, PIO0},
     pio::Pio,
 };
+use embassy_sync::channel::Channel;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
 use embassy_time::Duration;
 use panic_persist as _;
 use picoserve::{make_static, routing::{get, post}, AppBuilder, AppRouter};
 use rand::Rng;
-use static_cell::StaticCell;
 
 embassy_rp::bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => embassy_rp::pio::InterruptHandler<embassy_rp::peripherals::PIO0>;
     USBCTRL_IRQ => embassy_rp::usb::InterruptHandler<embassy_rp::peripherals::USB>;
 });
+
+#[derive(Clone, Copy)]
+enum GpioCommand {
+    LedOn,
+    LedOff,
+}
 
 #[embassy_executor::task]
 async fn logger_task(usb: embassy_rp::Peri<'static, embassy_rp::peripherals::USB>) {
@@ -38,27 +45,40 @@ async fn net_task(mut stack: embassy_net::Runner<'static, cyw43::NetDriver<'stat
     stack.run().await
 }
 
-static LED: StaticCell<Output> = StaticCell::new();
+#[embassy_executor::task]
+async fn gpio_task(
+    mut led: Output<'static>,
+    receiver: embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, GpioCommand, 4>,
+) {
+    loop {
+        match receiver.receive().await {
+            GpioCommand::LedOn => led.set_high(),
+            GpioCommand::LedOff => led.set_low(),
+        }
+    }
+}
+
+type GpioCmdSender = embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, GpioCommand, 4>;
 
 struct AppProps {
-    led: &'static mut Output<'static>,
+    gpio_cmd: GpioCmdSender,
 }
 
 impl AppBuilder for AppProps {
     type PathRouter = impl picoserve::routing::PathRouter;
 
     fn build_app(self) -> picoserve::Router<Self::PathRouter> {
-        let led = self.led as *mut Output;
+        let gpio_cmd = self.gpio_cmd;
         picoserve::Router::new()
             .route("/", get(|| async move { 
                 include_str!("../index.html")
             }))
             .route("/led/on", post(move || async move {
-                unsafe { &mut *led }.set_high();
+                let _ = gpio_cmd.send(GpioCommand::LedOn).await;
                 "LED ON"
             }))
             .route("/led/off", post(move || async move {
-                unsafe { &mut *led }.set_low();
+                let _ = gpio_cmd.send(GpioCommand::LedOff).await;
                 "LED OFF"
             }))
     }
@@ -145,9 +165,18 @@ async fn main(spawner: embassy_executor::Spawner) {
         .await;
 
     let led = Output::new(p.PIN_0, Level::Low);
-    let led_ref = LED.init(led);
+    
+    let (gpio_sender, gpio_receiver) = {
+        let ch = make_static!(
+            Channel<CriticalSectionRawMutex, GpioCommand, 4>,
+            Channel::new()
+        );
+        (ch.sender(), ch.receiver())
+    };
 
-    let app = make_static!(AppRouter<AppProps>, AppProps { led: led_ref }.build_app());
+    spawner.must_spawn(gpio_task(led, gpio_receiver));
+
+    let app = make_static!(AppRouter<AppProps>, AppProps { gpio_cmd: gpio_sender }.build_app());
 
     let config = make_static!(
         picoserve::Config<Duration>,
