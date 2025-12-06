@@ -93,19 +93,6 @@ async fn web_task(
         .into_never()
 }
 
-#[embassy_executor::task]
-async fn gpio_task(
-    mut led: Output<'static>,
-    receiver: embassy_sync::channel::Receiver<'static, CriticalSectionRawMutex, GpioCommand, 4>,
-) {
-    loop {
-        match receiver.receive().await {
-            GpioCommand::LedOn => led.set_high(),
-            GpioCommand::LedOff => led.set_low(),
-        }
-    }
-}
-
 #[embassy_executor::main]
 async fn main(spawner: embassy_executor::Spawner) {
     let p = embassy_rp::init(Default::default());
@@ -165,7 +152,7 @@ async fn main(spawner: embassy_executor::Spawner) {
         )
         .await;
 
-    let led = Output::new(p.PIN_0, Level::Low);
+    let mut led = Output::new(p.PIN_0, Level::Low);
     
     let (gpio_sender, gpio_receiver) = {
         let ch = make_static!(
@@ -174,8 +161,6 @@ async fn main(spawner: embassy_executor::Spawner) {
         );
         (ch.sender(), ch.receiver())
     };
-
-    spawner.must_spawn(gpio_task(led, gpio_receiver));
 
     let app = make_static!(AppRouter<AppProps>, AppProps { gpio_cmd: gpio_sender }.build_app());
 
@@ -193,4 +178,15 @@ async fn main(spawner: embassy_executor::Spawner) {
     for task_id in 0..WEB_TASK_POOL_SIZE {
         spawner.must_spawn(web_task(task_id, stack, app, config));
     }
+
+    let gpio = async {
+        loop {
+            match gpio_receiver.receive().await {
+                GpioCommand::LedOn => led.set_high(),
+                GpioCommand::LedOff => led.set_low(),
+            }
+        }
+    };
+
+    gpio.await;
 }
