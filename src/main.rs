@@ -29,10 +29,12 @@ enum GpioCommand {
 }
 
 /// Serial state shared between UART task and HTTP handlers
-#[derive(Clone, Copy)]
+/// Tracks parsed time values from scoreboard packets
+#[derive(Clone, Copy, PartialEq)]
 struct SerialState {
-    last_byte: u8,
-    count: u32,
+    minutes: u8,
+    seconds: u8,
+    packet_count: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -70,29 +72,65 @@ async fn logger_task(usb: embassy_rp::Peri<'static, embassy_rp::peripherals::USB
     embassy_usb_logger::run!(1024, log::LevelFilter::Info, driver);
 }
 
-/// Reads serial data from UART0 and updates shared state
-/// Demonstrates the pattern from ScoreboardCtrl where serial task updates
-/// Mutex-wrapped state that HTTP handlers can read
+/// Reads serial data from UART0 and parses scoreboard packets
+/// Demonstrates the pattern from ScoreboardCtrl where serial task:
+/// - Buffers bytes until sync byte (0x00) found
+/// - Extracts min/sec from packet offsets
+/// - Updates Mutex-wrapped state that HTTP handlers can read
+/// - Only logs when time values change
 #[embassy_executor::task]
 async fn read_serial(
     mut rx: UartRx<'static, uart::Async>,
     state: SharedSerialState,
 ) -> ! {
-    let mut buf = [0; 1];
+    let mut byte_buf = [0; 1];
+    let mut packet_buf = [0u8; 6];
+    let mut buf_idx = 0;
     log::info!("Serial read task started");
+    
     loop {
-        match rx.read(&mut buf).await {
+        match rx.read(&mut byte_buf).await {
             Ok(_) => {
-                let byte = buf[0];
-                let mut s = state.0.lock().await;
-                s.last_byte = byte;
-                s.count = s.count.saturating_add(1);
-                if s.count % 256 == 0 {
-                    log::info!("Serial: byte={}, count={}", byte, s.count);
+                let byte = byte_buf[0];
+                
+                // Look for sync byte (0x00)
+                if byte == 0x00 {
+                    buf_idx = 0;
+                    packet_buf[buf_idx] = byte;
+                    buf_idx += 1;
+                } else if buf_idx > 0 {
+                    // We're in the middle of a packet
+                    packet_buf[buf_idx] = byte;
+                    buf_idx += 1;
+                    
+                    // Check if we have a complete packet (6 bytes)
+                    if buf_idx == 6 {
+                        // Extract time values from packet
+                        let minutes = packet_buf[1];
+                        let seconds = packet_buf[2];
+                        
+                        // Update state and log only on change
+                        let new_state = SerialState {
+                            minutes,
+                            seconds,
+                            packet_count: 0, // Will increment on update
+                        };
+                        
+                        let mut s = state.0.lock().await;
+                        if *s != new_state {
+                            s.minutes = minutes;
+                            s.seconds = seconds;
+                            s.packet_count = s.packet_count.saturating_add(1);
+                            log::info!("Time: {}:{:02} (packets={})", minutes, seconds, s.packet_count);
+                        }
+                        
+                        buf_idx = 0; // Reset for next packet
+                    }
                 }
             }
             Err(e) => {
                 log::warn!("UART read error: {:?}", e);
+                buf_idx = 0; // Reset on error
             }
         }
     }
@@ -203,7 +241,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     let serial_state = SharedSerialState(
         make_static!(
             Mutex<CriticalSectionRawMutex, SerialState>,
-            Mutex::new(SerialState { last_byte: 0, count: 0 })
+            Mutex::new(SerialState { minutes: 0, seconds: 0, packet_count: 0 })
         )
     );
 

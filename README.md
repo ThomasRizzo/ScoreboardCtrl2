@@ -72,35 +72,73 @@ let gpio = async {
 
 ### Serial Data Handling
 
-Serial input follows the pattern from ScoreboardCtrl: the UART task updates shared state via a `Mutex`, which other tasks can read:
+Serial input follows the pattern from ScoreboardCtrl: the UART task parses packets and updates shared state via a `Mutex`, which other tasks can read without locks during normal operation:
+
+**Packet Structure (6 bytes):**
+- Byte 0: 0x00 (sync marker)
+- Byte 1: Minutes
+- Byte 2: Seconds
+- Byte 3: Shotclock
+- Byte 4: 0x3F (reserved)
+- Byte 5: CRC
+
+**Parsing Strategy:**
+1. Buffer single bytes from UART
+2. When sync byte (0x00`) found, start accumulating packet
+3. Once 6 bytes received, extract min/sec
+4. Update Mutex-wrapped state and log only on change (not every byte)
 
 ```rust
 /// Shared state updated by serial task
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct SerialState {
-    last_byte: u8,
-    count: u32,
+    minutes: u8,
+    seconds: u8,
+    packet_count: u32,
 }
 
-#[derive(Clone, Copy)]
-struct SharedSerialState(&'static Mutex<CriticalSectionRawMutex, SerialState>);
-
-// Serial task reads UART and updates state
+// Serial task reads, buffers, and parses packets
 #[embassy_executor::task]
 async fn read_serial(mut rx: UartRx<'static, uart::Async>, state: SharedSerialState) -> ! {
-    let mut buf = [0; 1];
+    let mut packet_buf = [0u8; 6];
+    let mut buf_idx = 0;
+    
     loop {
-        if let Ok(_) = rx.read(&mut buf).await {
-            let mut s = state.0.lock().await;  // Writer has exclusive lock
-            s.last_byte = buf[0];
-            s.count = s.count.saturating_add(1);
+        let mut byte_buf = [0; 1];
+        if let Ok(_) = rx.read(&mut byte_buf).await {
+            let byte = byte_buf[0];
+            
+            // Sync on 0x00, then buffer remaining 5 bytes
+            if byte == 0x00 {
+                buf_idx = 0;
+                packet_buf[0] = byte;
+                buf_idx = 1;
+            } else if buf_idx > 0 {
+                packet_buf[buf_idx] = byte;
+                buf_idx += 1;
+                
+                // Full packet: extract time, update state, log on change only
+                if buf_idx == 6 {
+                    let minutes = packet_buf[1];
+                    let seconds = packet_buf[2];
+                    let mut s = state.0.lock().await;
+                    
+                    if s.minutes != minutes || s.seconds != seconds {
+                        s.minutes = minutes;
+                        s.seconds = seconds;
+                        s.packet_count += 1;
+                        log::info!("Time: {}:{:02}", minutes, seconds);
+                    }
+                    buf_idx = 0;
+                }
+            }
         }
     }
 }
 
-// Other tasks can read the state via lock
+// Other tasks read the state via lock
 let s = serial_state.0.lock().await;
-log::info!("Last byte: {}, count: {}", s.last_byte, s.count);
+log::info!("Current time: {}:{:02}", s.minutes, s.seconds);
 ```
 
 **Benefits:**
@@ -242,10 +280,11 @@ enum GpioCommand {
 
 **SerialState** - Shared state updated by UART reader, read by any task:
 ```rust
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct SerialState {
-    last_byte: u8,
-    count: u32,
+    minutes: u8,        // Extracted from packet byte 1
+    seconds: u8,        // Extracted from packet byte 2
+    packet_count: u32,  // Count of valid packets received
 }
 ```
 
