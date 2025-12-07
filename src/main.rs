@@ -228,10 +228,12 @@ async fn timer_task(state: SharedScoreboardState) -> ! {
 /// - Extracts min/sec from packet offsets
 /// - Updates Mutex-wrapped state that HTTP handlers can read
 /// - Only logs when time values change
+/// - Controls timer running state: false if time=0:00, true if time changes
 #[embassy_executor::task]
 async fn read_serial(
     mut rx: UartRx<'static, uart::Async>,
     state: SharedSerialState,
+    scoreboard: SharedScoreboardState,
 ) -> ! {
     let mut byte_buf = [0; 1];
     let mut packet_buf = [0u8; 6];
@@ -266,6 +268,19 @@ async fn read_serial(
                             s.seconds = seconds;
                             s.packet_count = s.packet_count.saturating_add(1);
                             log::info!("Time: {}:{:02} (packets={})", minutes, seconds, s.packet_count);
+                            
+                            // Update scoreboard timer state based on serial time
+                            let mut sb = scoreboard.0.lock().await;
+                            if minutes == 0 && seconds == 0 {
+                                // If time is 0:00, stop the timer
+                                sb.running = false;
+                                log::info!("Serial time is 0:00, timer stopped");
+                            } else {
+                                // If time changed to non-zero, start the timer
+                                sb.running = true;
+                                sb.total_seconds = (minutes as u32) * 60 + (seconds as u32);
+                                log::info!("Serial time set to {}:{:02}, timer started", minutes, seconds);
+                            }
                         }
                         
                         buf_idx = 0; // Reset for next packet
@@ -397,7 +412,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     let mut uart_config = embassy_rp::uart::Config::default();
     uart_config.baudrate = 9600;
     let rx = UartRx::new(p.UART0, p.PIN_17, Irqs, p.DMA_CH1, uart_config);
-    spawner.must_spawn(read_serial(rx, serial_state));
+    spawner.must_spawn(read_serial(rx, serial_state, scoreboard_state));
 
     // Spawn timer task
     spawner.must_spawn(timer_task(scoreboard_state));
