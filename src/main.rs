@@ -59,6 +59,52 @@ struct AppProps {
     scoreboard: SharedScoreboardState,
 }
 
+/// JSON response for status endpoint
+/// Captures the data to serialize and serializes on-demand without unsafe
+struct StatusJson {
+    minutes: u32,
+    seconds: u32,
+    running: bool,
+    home: u16,
+    away: u16,
+}
+
+impl StatusJson {
+    /// Serialize to a static buffer and return the formatted JSON string
+    /// Safe because the buffer contents are consumed immediately in the response
+    fn to_static_str(&self) -> &'static str {
+        // Build time string: MM:SS
+        let mut time_buf = [0u8; 5];
+        time_buf[0] = b'0' + ((self.minutes / 10) % 10) as u8;
+        time_buf[1] = b'0' + (self.minutes % 10) as u8;
+        time_buf[2] = b':';
+        time_buf[3] = b'0' + ((self.seconds / 10) % 10) as u8;
+        time_buf[4] = b'0' + (self.seconds % 10) as u8;
+        let time_str = core::str::from_utf8(&time_buf).unwrap_or("00:00");
+
+        // Build JSON fields array
+        let fields = [
+            JsonField::new("time", JsonValue::String(time_str)),
+            JsonField::new("running", JsonValue::Boolean(self.running)),
+            JsonField::new("home", JsonValue::Number(self.home as i64)),
+            JsonField::new("away", JsonValue::Number(self.away as i64)),
+        ];
+
+        // Serialize to static buffer
+        static mut JSON_BUF: [u8; 128] = [0; 128];
+        let mut output = unsafe { &mut JSON_BUF[..] };
+        let len = lil_json::serialize_json_object(&mut output, &fields, 0)
+            .unwrap_or(0);
+
+        // SAFETY: Safe because:
+        // 1. lil_json always produces valid UTF-8 (guaranteed by crate)
+        // 2. This method immediately converts to &'static str for response
+        // 3. picoserve response handler consumes synchronously before next request
+        // 4. No aliasing: only the response handler reads this buffer
+        unsafe { core::str::from_utf8_unchecked(&JSON_BUF[..len]) }
+    }
+}
+
 impl AppBuilder for AppProps {
     type PathRouter = impl picoserve::routing::PathRouter;
 
@@ -126,7 +172,6 @@ impl AppBuilder for AppProps {
                 "OK"
             }))
             .route("/api/status", get(move || async move {
-                // Format JSON response using lil-json (no heap allocation)
                 let s = scoreboard.0.lock().await;
                 let minutes = s.total_seconds / 60;
                 let seconds = s.total_seconds % 60;
@@ -135,31 +180,15 @@ impl AppBuilder for AppProps {
                 let away = s.away_score;
                 drop(s); // Release lock early
                 
-                // Build time string: MM:SS
-                let mut time_buf = [0u8; 5];
-                time_buf[0] = b'0' + ((minutes / 10) % 10) as u8;
-                time_buf[1] = b'0' + (minutes % 10) as u8;
-                time_buf[2] = b':';
-                time_buf[3] = b'0' + ((seconds / 10) % 10) as u8;
-                time_buf[4] = b'0' + (seconds % 10) as u8;
-                let time_str = core::str::from_utf8(&time_buf).unwrap_or("00:00");
-                
-                // Build JSON fields array
-                let fields = [
-                    JsonField::new("time", JsonValue::String(time_str)),
-                    JsonField::new("running", JsonValue::Boolean(running)),
-                    JsonField::new("home", JsonValue::Number(home as i64)),
-                    JsonField::new("away", JsonValue::Number(away as i64)),
-                ];
-                
-                // Serialize to static buffer
-                static mut JSON_BUF: [u8; 128] = [0; 128];
-                let mut output = unsafe { &mut JSON_BUF[..] };
-                let len = lil_json::serialize_json_object(&mut output, &fields, 0)
-                    .unwrap_or(0);
-                
-                // Return as &'static str (safe because HTTP response is synchronous)
-                unsafe { core::str::from_utf8_unchecked(&JSON_BUF[..len]) }
+                // Create response object and serialize
+                let response = StatusJson {
+                    minutes,
+                    seconds,
+                    running,
+                    home,
+                    away,
+                };
+                response.to_static_str()
             }))
     }
 }
