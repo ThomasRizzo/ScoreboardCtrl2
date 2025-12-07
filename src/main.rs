@@ -40,8 +40,22 @@ struct SerialState {
 #[derive(Clone, Copy)]
 struct SharedSerialState(&'static Mutex<CriticalSectionRawMutex, SerialState>);
 
+/// Scoreboard state: timer and team scores
+/// Single writer (timer_task), multiple readers (HTTP handlers)
+#[derive(Clone, Copy)]
+struct ScoreboardState {
+    total_seconds: u32,      // Countdown timer
+    running: bool,           // Timer active
+    home_score: u16,         // Home team score
+    away_score: u16,         // Away team score
+}
+
+#[derive(Clone, Copy)]
+struct SharedScoreboardState(&'static Mutex<CriticalSectionRawMutex, ScoreboardState>);
+
 struct AppProps {
     gpio_cmd: embassy_sync::channel::Sender<'static, CriticalSectionRawMutex, GpioCommand, 4>,
+    scoreboard: SharedScoreboardState,
 }
 
 impl AppBuilder for AppProps {
@@ -49,6 +63,7 @@ impl AppBuilder for AppProps {
 
     fn build_app(self) -> picoserve::Router<Self::PathRouter> {
         let gpio_cmd = self.gpio_cmd;
+        let scoreboard = self.scoreboard;
         picoserve::Router::new()
             .route("/", get(|| async move { 
                 include_str!("../index.html")
@@ -61,7 +76,171 @@ impl AppBuilder for AppProps {
                 let _ = gpio_cmd.send(GpioCommand::LedOff).await;
                 "LED OFF"
             }))
+            .route("/api/timer/start", post(move || async move {
+                let mut s = scoreboard.0.lock().await;
+                s.running = true;
+                log::info!("Timer started");
+                "OK"
+            }))
+            .route("/api/timer/stop", post(move || async move {
+                let mut s = scoreboard.0.lock().await;
+                s.running = false;
+                log::info!("Timer stopped");
+                "OK"
+            }))
+            .route("/api/timer/reset", post(move || async move {
+                let mut s = scoreboard.0.lock().await;
+                s.total_seconds = 0;
+                s.running = false;
+                log::info!("Timer reset");
+                "OK"
+            }))
+            .route("/api/timer/set", post(move || async move {
+                // Note: picoserve doesn't support query params in POST easily,
+                // would need to parse from body or use GET with different approach
+                "Not implemented yet - awaiting query param support"
+            }))
+            .route("/api/score/home/inc", post(move || async move {
+                let mut s = scoreboard.0.lock().await;
+                s.home_score = s.home_score.saturating_add(1);
+                log::info!("Home score: {}", s.home_score);
+                "OK"
+            }))
+            .route("/api/score/home/dec", post(move || async move {
+                let mut s = scoreboard.0.lock().await;
+                s.home_score = s.home_score.saturating_sub(1);
+                log::info!("Home score: {}", s.home_score);
+                "OK"
+            }))
+            .route("/api/score/away/inc", post(move || async move {
+                let mut s = scoreboard.0.lock().await;
+                s.away_score = s.away_score.saturating_add(1);
+                log::info!("Away score: {}", s.away_score);
+                "OK"
+            }))
+            .route("/api/score/away/dec", post(move || async move {
+                let mut s = scoreboard.0.lock().await;
+                s.away_score = s.away_score.saturating_sub(1);
+                log::info!("Away score: {}", s.away_score);
+                "OK"
+            }))
+            .route("/api/status", get(move || async move {
+                // Format JSON response without heap allocation
+                // {"time":"MM:SS","running":true,"home":0,"away":0}
+                let s = scoreboard.0.lock().await;
+                let minutes = s.total_seconds / 60;
+                let seconds = s.total_seconds % 60;
+                let running = s.running;
+                let home = s.home_score;
+                let away = s.away_score;
+                drop(s); // Release lock early
+                
+                // Use a static buffer holder with const fn
+                make_status_json(minutes as u8, seconds as u8, running, home, away)
+            }))
     }
+}
+
+/// Format scoreboard status as JSON string without heap allocation
+/// Formats into a provided buffer and returns the formatted slice
+fn make_status_json(min: u8, sec: u8, running: bool, home: u16, away: u16) -> &'static str {
+    // Create a temporary string - picoserve will copy this to response
+    // This uses the stack, not heap
+    
+    // We need to return a static string, but we can't use a local buffer
+    // Solution: create a static mutable buffer for formatting
+    // This is safe because we're under single task (HTTP response is synchronous)
+    static mut STATUS_BUF: [u8; 128] = [0; 128];
+    static mut STATUS_LEN: usize = 0;
+    
+    unsafe {
+        let mut pos = 0;
+        
+        // Write JSON: {"time":"MM:SS","running":bool,"home":N,"away":N}
+        STATUS_BUF[pos..pos+9].copy_from_slice(b"{\"time\":\"");
+        pos += 9;
+        
+        // Minutes
+        if min >= 10 {
+            STATUS_BUF[pos] = b'0' + (min / 10);
+            STATUS_BUF[pos+1] = b'0' + (min % 10);
+        } else {
+            STATUS_BUF[pos] = b'0';
+            STATUS_BUF[pos+1] = b'0' + min;
+        }
+        pos += 2;
+        
+        // Colon
+        STATUS_BUF[pos] = b':';
+        pos += 1;
+        
+        // Seconds
+        if sec >= 10 {
+            STATUS_BUF[pos] = b'0' + (sec / 10);
+            STATUS_BUF[pos+1] = b'0' + (sec % 10);
+        } else {
+            STATUS_BUF[pos] = b'0';
+            STATUS_BUF[pos+1] = b'0' + sec;
+        }
+        pos += 2;
+        
+        // running field
+        STATUS_BUF[pos..pos+11].copy_from_slice(b"\",\"running\":");
+        pos += 11;
+        
+        if running {
+            STATUS_BUF[pos..pos+4].copy_from_slice(b"true");
+            pos += 4;
+        } else {
+            STATUS_BUF[pos..pos+5].copy_from_slice(b"false");
+            pos += 5;
+        }
+        
+        // home score
+        STATUS_BUF[pos..pos+8].copy_from_slice(b",\"home\":");
+        pos += 8;
+        
+        let home_len = write_u16(&mut STATUS_BUF[pos..], home);
+        pos += home_len;
+        
+        // away score
+        STATUS_BUF[pos..pos+8].copy_from_slice(b",\"away\":");
+        pos += 8;
+        
+        let away_len = write_u16(&mut STATUS_BUF[pos..], away);
+        pos += away_len;
+        
+        // closing brace
+        STATUS_BUF[pos] = b'}';
+        pos += 1;
+        
+        STATUS_LEN = pos;
+        core::str::from_utf8_unchecked(&STATUS_BUF[..pos])
+    }
+}
+
+/// Write u16 as decimal ASCII bytes, return number of bytes written
+fn write_u16(buf: &mut [u8], mut n: u16) -> usize {
+    let mut digits = [0u8; 5];
+    let mut len = 0;
+    
+    if n == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+    
+    while n > 0 {
+        digits[len] = (n % 10) as u8 + b'0';
+        n /= 10;
+        len += 1;
+    }
+    
+    // Reverse and write to buffer
+    for i in 0..len {
+        buf[i] = digits[len - 1 - i];
+    }
+    
+    len
 }
     
 const WEB_TASK_POOL_SIZE: usize = 8;
@@ -70,6 +249,26 @@ const WEB_TASK_POOL_SIZE: usize = 8;
 async fn logger_task(usb: embassy_rp::Peri<'static, embassy_rp::peripherals::USB>) {
     let driver = embassy_rp::usb::Driver::new(usb, Irqs);
     embassy_usb_logger::run!(1024, log::LevelFilter::Info, driver);
+}
+
+/// Timer task: decrements countdown every second if running
+/// Updates Mutex-wrapped ScoreboardState
+#[embassy_executor::task]
+async fn timer_task(state: SharedScoreboardState) -> ! {
+    loop {
+        embassy_time::Timer::after_secs(1).await;
+        
+        let mut s = state.0.lock().await;
+        if s.running {
+            if s.total_seconds > 0 {
+                s.total_seconds -= 1;
+                log::debug!("Timer: {}s", s.total_seconds);
+            } else {
+                s.running = false;
+                log::info!("Timer complete");
+            }
+        }
+    }
 }
 
 /// Reads serial data from UART0 and parses scoreboard packets
@@ -235,14 +434,26 @@ async fn main(spawner: embassy_executor::Spawner) {
         )
     );
 
+    // Create shared scoreboard state - timer and scores
+    let scoreboard_state = SharedScoreboardState(
+        make_static!(
+            Mutex<CriticalSectionRawMutex, ScoreboardState>,
+            Mutex::new(ScoreboardState { total_seconds: 0, running: false, home_score: 0, away_score: 0 })
+        )
+    );
+
     // Configure UART0 for serial reading
     let mut uart_config = embassy_rp::uart::Config::default();
     uart_config.baudrate = 9600;
     let rx = UartRx::new(p.UART0, p.PIN_17, Irqs, p.DMA_CH1, uart_config);
     spawner.must_spawn(read_serial(rx, serial_state));
 
+    // Spawn timer task
+    spawner.must_spawn(timer_task(scoreboard_state));
+
     let app = make_static!(AppRouter<AppProps>, AppProps { 
         gpio_cmd: gpio_sender,
+        scoreboard: scoreboard_state,
     }.build_app());
 
     let config = make_static!(

@@ -3,99 +3,396 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pico LED Control</title>
+    <title>Scoreboard Controller</title>
     <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
         body {
-            font-family: Arial, sans-serif;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
-            min-height: 100vh;
-            margin: 0;
-            background-color: #f0f0f0;
+            padding: 20px;
         }
+
         .container {
-            text-align: center;
             background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
             padding: 40px;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            max-width: 900px;
+            width: 100%;
         }
+
         h1 {
+            text-align: center;
             color: #333;
-            margin-bottom: 30px;
+            margin-bottom: 40px;
+            font-size: 32px;
         }
-        .button-group {
+
+        /* Timer Section */
+        .timer-section {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 30px;
+            margin-bottom: 40px;
+            text-align: center;
+        }
+
+        .timer-display {
+            font-size: 72px;
+            font-weight: bold;
+            color: #1e3c72;
+            margin: 20px 0;
+            font-family: 'Courier New', monospace;
+            letter-spacing: 4px;
+        }
+
+        .timer-controls {
             display: flex;
-            gap: 20px;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-top: 20px;
+        }
+
+        button {
+            padding: 12px 24px;
+            font-size: 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        .btn-primary {
+            background: #2a5298;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #1e3c72;
+        }
+
+        .btn-success {
+            background: #27ae60;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #229954;
+        }
+
+        .btn-danger {
+            background: #e74c3c;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c0392b;
+        }
+
+        .btn-warning {
+            background: #f39c12;
+            color: white;
+        }
+
+        .btn-warning:hover {
+            background: #d68910;
+        }
+
+        /* Timer Set Section */
+        .timer-set-section {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 40px;
+        }
+
+        .timer-set-group {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+            flex-wrap: wrap;
+        }
+
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .input-group label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #666;
+            text-transform: uppercase;
+        }
+
+        .input-group input {
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            width: 80px;
+        }
+
+        .input-group input:focus {
+            outline: none;
+            border-color: #2a5298;
+        }
+
+        /* Scores Section */
+        .scores-section {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 40px;
+        }
+
+        .score-box {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            border: 3px solid #ddd;
+            transition: all 0.3s ease;
+        }
+
+        .score-box.home {
+            border-color: #27ae60;
+        }
+
+        .score-box.away {
+            border-color: #e74c3c;
+        }
+
+        .score-label {
+            font-size: 18px;
+            font-weight: 600;
+            color: #666;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .score-display {
+            font-size: 64px;
+            font-weight: bold;
+            margin: 20px 0;
+            font-family: 'Courier New', monospace;
+        }
+
+        .score-box.home .score-display {
+            color: #27ae60;
+        }
+
+        .score-box.away .score-display {
+            color: #e74c3c;
+        }
+
+        .score-controls {
+            display: flex;
+            gap: 10px;
             justify-content: center;
         }
-        button {
-            padding: 15px 40px;
-            font-size: 18px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            transition: opacity 0.2s;
+
+        .btn-score {
+            width: 50px;
+            height: 50px;
+            font-size: 24px;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
-        button:hover {
-            opacity: 0.8;
+
+        /* Responsive */
+        @media (max-width: 600px) {
+            .container {
+                padding: 20px;
+            }
+
+            h1 {
+                font-size: 24px;
+                margin-bottom: 30px;
+            }
+
+            .timer-display {
+                font-size: 48px;
+            }
+
+            .score-display {
+                font-size: 48px;
+            }
+
+            .scores-section {
+                grid-template-columns: 1fr;
+            }
+
+            .timer-controls {
+                flex-direction: column;
+            }
+
+            button {
+                width: 100%;
+            }
         }
-        button:active {
-            transform: scale(0.98);
-        }
-        #ledOn {
-            background-color: #4CAF50;
-            color: white;
-        }
-        #ledOff {
-            background-color: #f44336;
-            color: white;
-        }
-        #status {
-            margin-top: 20px;
-            font-size: 14px;
+
+        /* Status message */
+        .status {
+            text-align: center;
             color: #666;
+            font-size: 14px;
+            margin-top: 20px;
             min-height: 20px;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>LED Control</h1>
-        <div class="button-group">
-            <button id="ledOn">LED On</button>
-            <button id="ledOff">LED Off</button>
+        <h1>Scoreboard Controller</h1>
+
+        <!-- Timer Section -->
+        <div class="timer-section">
+            <h2 style="color: #666; font-size: 18px; margin-bottom: 10px;">TIMER</h2>
+            <div class="timer-display" id="timerDisplay">00:00</div>
+            <div class="timer-controls">
+                <button class="btn-success" id="btnStart">Start</button>
+                <button class="btn-danger" id="btnStop">Stop</button>
+                <button class="btn-warning" id="btnReset">Reset</button>
+            </div>
         </div>
-        <div id="status"></div>
+
+        <!-- Timer Set Section -->
+        <div class="timer-set-section">
+            <div class="timer-set-group">
+                <div class="input-group">
+                    <label for="inputMinutes">Minutes</label>
+                    <input type="number" id="inputMinutes" min="0" max="99" value="0">
+                </div>
+                <div class="input-group">
+                    <label for="inputSeconds">Seconds</label>
+                    <input type="number" id="inputSeconds" min="0" max="59" value="0">
+                </div>
+                <button class="btn-primary" id="btnSetTimer">Set Timer</button>
+            </div>
+        </div>
+
+        <!-- Scores Section -->
+        <div class="scores-section">
+            <div class="score-box home">
+                <div class="score-label">Home Team</div>
+                <div class="score-display" id="homeScore">0</div>
+                <div class="score-controls">
+                    <button class="btn-success btn-score" id="btnHomeInc">+</button>
+                    <button class="btn-danger btn-score" id="btnHomeDec">−</button>
+                </div>
+            </div>
+
+            <div class="score-box away">
+                <div class="score-label">Away Team</div>
+                <div class="score-display" id="awayScore">0</div>
+                <div class="score-controls">
+                    <button class="btn-success btn-score" id="btnAwayInc">+</button>
+                    <button class="btn-danger btn-score" id="btnAwayDec">−</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="status" id="status"></div>
     </div>
 
     <script>
-        const ledOnBtn = document.getElementById('ledOn');
-        const ledOffBtn = document.getElementById('ledOff');
-        const statusDiv = document.getElementById('status');
+        // State management
+        let lastTime = null;
+        let lastHome = null;
+        let lastAway = null;
 
-        ledOnBtn.addEventListener('click', () => {
-            sendCommand('/led/on');
+        // Timer controls
+        document.getElementById('btnStart').addEventListener('click', () => {
+            fetch('/api/timer/start', { method: 'POST' });
         });
 
-        ledOffBtn.addEventListener('click', () => {
-            sendCommand('/led/off');
+        document.getElementById('btnStop').addEventListener('click', () => {
+            fetch('/api/timer/stop', { method: 'POST' });
         });
 
-        async function sendCommand(endpoint) {
+        document.getElementById('btnReset').addEventListener('click', () => {
+            fetch('/api/timer/reset', { method: 'POST' });
+        });
+
+        document.getElementById('btnSetTimer').addEventListener('click', () => {
+            const min = parseInt(document.getElementById('inputMinutes').value) || 0;
+            const sec = parseInt(document.getElementById('inputSeconds').value) || 0;
+            const totalSeconds = min * 60 + sec;
+            
+            // TODO: implement with query params or body parsing on backend
+            fetch(`/api/timer/set?min=${min}&sec=${sec}`, { method: 'POST' })
+                .catch(() => {
+                    // Expected to fail until set endpoint is fully implemented
+                    console.log('Timer set not yet implemented');
+                });
+        });
+
+        // Score controls
+        document.getElementById('btnHomeInc').addEventListener('click', () => {
+            fetch('/api/score/home/inc', { method: 'POST' });
+        });
+
+        document.getElementById('btnHomeDec').addEventListener('click', () => {
+            fetch('/api/score/home/dec', { method: 'POST' });
+        });
+
+        document.getElementById('btnAwayInc').addEventListener('click', () => {
+            fetch('/api/score/away/inc', { method: 'POST' });
+        });
+
+        document.getElementById('btnAwayDec').addEventListener('click', () => {
+            fetch('/api/score/away/dec', { method: 'POST' });
+        });
+
+        // Poll status every 500ms
+        async function updateStatus() {
             try {
-                const response = await fetch(endpoint, { method: 'POST' });
+                const response = await fetch('/api/status');
                 if (response.ok) {
-                    statusDiv.textContent = endpoint === '/led/on' ? 'LED turned ON' : 'LED turned OFF';
-                    setTimeout(() => { statusDiv.textContent = ''; }, 2000);
-                } else {
-                    statusDiv.textContent = 'Error: ' + response.status;
+                    const data = await response.json();
+                    
+                    // Update timer display
+                    document.getElementById('timerDisplay').textContent = data.time;
+                    
+                    // Update scores
+                    document.getElementById('homeScore').textContent = data.home;
+                    document.getElementById('awayScore').textContent = data.away;
                 }
             } catch (error) {
-                statusDiv.textContent = 'Connection error';
+                console.error('Status update failed:', error);
             }
         }
+
+        // Start polling every 500ms
+        setInterval(updateStatus, 500);
+        updateStatus(); // Initial update
     </script>
 </body>
 </html>
