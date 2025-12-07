@@ -12,6 +12,7 @@ use embassy_rp::{
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 
 use embassy_time::Duration;
+use lil_json::{JsonField, JsonValue};
 use panic_persist as _;
 use picoserve::{make_static, routing::{get, post}, AppBuilder, AppRouter};
 use rand::Rng;
@@ -125,8 +126,7 @@ impl AppBuilder for AppProps {
                 "OK"
             }))
             .route("/api/status", get(move || async move {
-                // Format JSON response without heap allocation
-                // {"time":"MM:SS","running":true,"home":0,"away":0}
+                // Format JSON response using lil-json (no heap allocation)
                 let s = scoreboard.0.lock().await;
                 let minutes = s.total_seconds / 60;
                 let seconds = s.total_seconds % 60;
@@ -135,114 +135,36 @@ impl AppBuilder for AppProps {
                 let away = s.away_score;
                 drop(s); // Release lock early
                 
-                // Use a static buffer holder with const fn
-                make_status_json(minutes as u8, seconds as u8, running, home, away)
+                // Build time string: MM:SS
+                let mut time_buf = [0u8; 5];
+                time_buf[0] = b'0' + ((minutes / 10) % 10) as u8;
+                time_buf[1] = b'0' + (minutes % 10) as u8;
+                time_buf[2] = b':';
+                time_buf[3] = b'0' + ((seconds / 10) % 10) as u8;
+                time_buf[4] = b'0' + (seconds % 10) as u8;
+                let time_str = core::str::from_utf8(&time_buf).unwrap_or("00:00");
+                
+                // Build JSON fields array
+                let fields = [
+                    JsonField::new("time", JsonValue::String(time_str)),
+                    JsonField::new("running", JsonValue::Boolean(running)),
+                    JsonField::new("home", JsonValue::Number(home as i64)),
+                    JsonField::new("away", JsonValue::Number(away as i64)),
+                ];
+                
+                // Serialize to static buffer
+                static mut JSON_BUF: [u8; 128] = [0; 128];
+                let mut output = unsafe { &mut JSON_BUF[..] };
+                let len = lil_json::serialize_json_object(&mut output, &fields, 0)
+                    .unwrap_or(0);
+                
+                // Return as &'static str (safe because HTTP response is synchronous)
+                unsafe { core::str::from_utf8_unchecked(&JSON_BUF[..len]) }
             }))
     }
 }
 
-/// Format scoreboard status as JSON string without heap allocation
-/// Formats into a provided buffer and returns the formatted slice
-fn make_status_json(min: u8, sec: u8, running: bool, home: u16, away: u16) -> &'static str {
-    // Create a temporary string - picoserve will copy this to response
-    // This uses the stack, not heap
-    
-    // We need to return a static string, but we can't use a local buffer
-    // Solution: create a static mutable buffer for formatting
-    // This is safe because we're under single task (HTTP response is synchronous)
-    static mut STATUS_BUF: [u8; 128] = [0; 128];
-    static mut STATUS_LEN: usize = 0;
-    
-    unsafe {
-        let mut pos = 0;
-        
-        // Write JSON: {"time":"MM:SS","running":bool,"home":N,"away":N}
-        STATUS_BUF[pos..pos+9].copy_from_slice(b"{\"time\":\"");
-        pos += 9;
-        
-        // Minutes
-        if min >= 10 {
-            STATUS_BUF[pos] = b'0' + (min / 10);
-            STATUS_BUF[pos+1] = b'0' + (min % 10);
-        } else {
-            STATUS_BUF[pos] = b'0';
-            STATUS_BUF[pos+1] = b'0' + min;
-        }
-        pos += 2;
-        
-        // Colon
-        STATUS_BUF[pos] = b':';
-        pos += 1;
-        
-        // Seconds
-        if sec >= 10 {
-            STATUS_BUF[pos] = b'0' + (sec / 10);
-            STATUS_BUF[pos+1] = b'0' + (sec % 10);
-        } else {
-            STATUS_BUF[pos] = b'0';
-            STATUS_BUF[pos+1] = b'0' + sec;
-        }
-        pos += 2;
-        
-        // running field
-        STATUS_BUF[pos..pos+11].copy_from_slice(b"\",\"running\":");
-        pos += 11;
-        
-        if running {
-            STATUS_BUF[pos..pos+4].copy_from_slice(b"true");
-            pos += 4;
-        } else {
-            STATUS_BUF[pos..pos+5].copy_from_slice(b"false");
-            pos += 5;
-        }
-        
-        // home score
-        STATUS_BUF[pos..pos+8].copy_from_slice(b",\"home\":");
-        pos += 8;
-        
-        let home_len = write_u16(&mut STATUS_BUF[pos..], home);
-        pos += home_len;
-        
-        // away score
-        STATUS_BUF[pos..pos+8].copy_from_slice(b",\"away\":");
-        pos += 8;
-        
-        let away_len = write_u16(&mut STATUS_BUF[pos..], away);
-        pos += away_len;
-        
-        // closing brace
-        STATUS_BUF[pos] = b'}';
-        pos += 1;
-        
-        STATUS_LEN = pos;
-        core::str::from_utf8_unchecked(&STATUS_BUF[..pos])
-    }
-}
 
-/// Write u16 as decimal ASCII bytes, return number of bytes written
-fn write_u16(buf: &mut [u8], mut n: u16) -> usize {
-    let mut digits = [0u8; 5];
-    let mut len = 0;
-    
-    if n == 0 {
-        buf[0] = b'0';
-        return 1;
-    }
-    
-    while n > 0 {
-        digits[len] = (n % 10) as u8 + b'0';
-        n /= 10;
-        len += 1;
-    }
-    
-    // Reverse and write to buffer
-    for i in 0..len {
-        buf[i] = digits[len - 1 - i];
-    }
-    
-    len
-}
-    
 const WEB_TASK_POOL_SIZE: usize = 8;
 
 #[embassy_executor::task]

@@ -17,6 +17,7 @@ dependencies = [
  "embassy-time",
  "embassy-usb-logger",
  "embedded-io-async",
+ "lil-json",
  "log",
  "panic-persist",
  "picoserve",
@@ -895,6 +896,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37c93d8daa9d8a012fd8ab92f088405fb202ea0b6ab73ee2482ae66af4f42091"
 
 [[package]]
+name = "lil-json"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75a33a3adca9d1e29da1868263bc25ad24e246d1de098d5d02c604fad0e13838"
+dependencies = [
+ "embedded-io",
+ "numtoa",
+]
+
+[[package]]
 name = "litrs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -997,6 +1008,12 @@ dependencies = [
  "quote",
  "syn 2.0.111",
 ]
+
+[[package]]
+name = "numtoa"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a6da8d50bd4f4b2e9788c44714a3fa4e465d33fd6a6ad70991db6eb30807dca"
 
 [[package]]
 name = "once_cell"

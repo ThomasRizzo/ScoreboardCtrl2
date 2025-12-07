@@ -16,6 +16,7 @@ embassy-time = "0.5.0"
 embassy-usb-logger = "0.5.1"
 embedded-io-async = "0.6.1"
 log = { version = "0.4.22", default-features = false }
+lil-json = { version = "0.1", default-features = false }
 panic-persist = { version = "0.3.0", features = ["utf8"] }
 picoserve = { version = "0.17.1", features = ["embassy", "log"] }
 portable-atomic = { version = "1.7.0", features = ["critical-section"], default-features = false }
