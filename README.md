@@ -1,15 +1,16 @@
-# Pico Hello - WiFi LED Control
+# ScoreboardCtrl - Pico W Scoreboard Controller
 
-A Raspberry Pi Pico W web server with HTTP-controlled GPIO LED. Demonstrates clean async patterns for embedded systems using Embassy.
+A Raspberry Pi Pico W web server with HTTP-controlled GPIO LED and UART scoreboard packet parsing. Demonstrates clean async patterns for embedded systems using Embassy.
 
 ## Features
 
-- **WiFi Access Point** - Pico W broadcasts `pico_hello` WiFi AP
+- **WiFi Access Point** - Pico W broadcasts `Scoreboard` open WiFi AP
 - **HTTP Web Server** - Serves HTML UI on port 80 (192.168.0.1)
 - **LED Control** - HTTP endpoints to control GPIO0 LED
 - **Web UI** - Styled HTML buttons to toggle LED on/off
 - **USB Logger** - Debug logging via USB serial (embassy-usb-logger)
-- **Serial Input** - UART0 reads external device data (9600 baud, GPIO17 RX)
+- **Serial Input** - UART0 reads scoreboard packets (9600 baud, GPIO17 RX)
+- **Packet Parsing** - Extracts time (min/sec) from 6-byte scoreboard packets with sync byte framing
 - **Message-based Architecture** - Safe channel-based control (no unsafe code)
 
 ## Architecture
@@ -250,13 +251,15 @@ cargo build --release
 
 ## Project Structure
 
-- `src/main.rs` - Embassy async application (~240 lines)
+- `src/main.rs` - Embassy async application (~250 lines)
   - Infrastructure tasks: logger, WiFi, network, HTTP server pool, UART reader
-  - Shared state: `SerialState` via Mutex for read-heavy access patterns
+  - Shared state: `SerialState` via Mutex for scoreboard time (min/sec)
+  - Packet parsing: Sync byte detection, 6-byte frame extraction, time value updates
   - Peripheral control: GPIO LED via async block with channel-based messaging
   - HTTP routing for LED on/off endpoints
 - `index.html` - Responsive web UI for LED control
 - `AGENTS.md` - AI agent instructions and issue tracking guide
+- `Cargo.toml` - Rust dependencies (embassy, picoserve, cyw43, etc.)
 
 ## API
 
