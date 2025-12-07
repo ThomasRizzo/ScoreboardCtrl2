@@ -21,6 +21,3 @@ picoserve = { version = "0.17.1", features = ["embassy", "log"] }
 portable-atomic = { version = "1.7.0", features = ["critical-section"], default-features = false }
 rand = { version = "0.8.5", default-features = false }
 static_cell = "2.1.0"
-
-[dependencies.example_secrets]
-path = "../picoserve/examples/embassy/example_secrets"

@@ -214,11 +214,7 @@ async fn main(spawner: embassy_executor::Spawner) {
     spawner.must_spawn(net_task(net_runner));
 
     control
-        .start_ap_wpa2(
-            example_secrets::WIFI_SSID,
-            example_secrets::WIFI_PASSWORD,
-            8,
-        )
+        .start_ap_open("Scoreboard", 8)
         .await;
 
     let mut led = Output::new(p.PIN_0, Level::Low);
