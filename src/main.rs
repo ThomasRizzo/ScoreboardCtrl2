@@ -109,15 +109,9 @@ async fn read_serial(
                         let minutes = packet_buf[1];
                         let seconds = packet_buf[2];
                         
-                        // Update state and log only on change
-                        let new_state = SerialState {
-                            minutes,
-                            seconds,
-                            packet_count: 0, // Will increment on update
-                        };
-                        
+                        // Update state and log only on time change
                         let mut s = state.0.lock().await;
-                        if *s != new_state {
+                        if s.minutes != minutes || s.seconds != seconds {
                             s.minutes = minutes;
                             s.seconds = seconds;
                             s.packet_count = s.packet_count.saturating_add(1);
